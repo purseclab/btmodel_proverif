@@ -1,0 +1,520 @@
+free ch: channel.
+free compromised_ch: channel.
+
+(* Secure communication channels between app layer and stack layer *)
+free central_BT_app_in_ch: channel [private].
+free central_BT_app_out_ch: channel [private].
+free central_BLE_app_in_ch: channel [private].
+free central_BLE_app_out_ch: channel [private].
+free central_Mesh_app_in_ch: channel [private].
+free central_Mesh_app_out_ch: channel [private].
+free peripheral_BT_app_in_ch: channel [private].
+free peripheral_BT_app_out_ch: channel [private].
+free peripheral_BLE_app_in_ch: channel [private].
+free peripheral_BLE_app_out_ch: channel [private].
+free peripheral_Mesh_app_in_ch: channel [private].
+free peripheral_Mesh_app_out_ch: channel [private].
+
+(*Type definition *)
+type key.
+type bt_addr.
+type random_num.
+type nonce.
+
+type tag.
+
+(* BT/BLE device bt addresses *)
+free addr_A: bt_addr.
+free addr_B: bt_addr.
+
+(* Mesh device addreses *)
+free addr_prov: bt_addr.
+free addr_dev: bt_addr.
+
+(* tags *)
+free t1: tag.
+free t2: tag.
+
+(* Database for storing keys *)
+table bc_key_c(bt_addr, key).
+table le_key_c(bt_addr, key).
+table mesh_net_key_c(bt_addr, bitstring).
+table mesh_app_key_c(bt_addr, key).
+table mesh_seq_c(bt_addr, bitstring).
+table mesh_iv_c(bt_addr, bitstring).
+
+table bc_key_p(bt_addr, key).
+table le_key_p(bt_addr, key).
+table mesh_net_key_p(bt_addr, bitstring).
+table mesh_app_key_p(bt_addr, key).
+table mesh_seq_p(bt_addr, bitstring).
+table mesh_iv_p(bt_addr, bitstring).
+
+(* ttl value for Mesh devices *)
+free ttl1: bitstring.
+free ttl2: bitstring.
+
+(* BT/BLE/Mesh req/rsp during reconnection *)
+free BCreq: bitstring [private].
+free BLEreq: bitstring [private].
+free Meshreq: bitstring [private].
+free BCrsp: bitstring [private].
+free BLErsp: bitstring [private].
+free Meshrsp: bitstring [private].
+
+(* Error message *)
+free err: bitstring.
+
+(* Constant values *)
+const brle: bitstring.
+const lebr: bitstring.
+const SALT: bitstring.
+const btak: bitstring.
+const ZERO: bitstring.
+const SMK2: bitstring.
+const ONE: bitstring.
+const TWO: bitstring.
+const THREE: bitstring.
+
+(* Hash functions *)
+fun HMAC_SHA256(key, bitstring): bitstring.
+fun AES_CMAC(bitstring, bitstring): bitstring.
+
+(* type conversion functions *)
+fun bitstring2key(bitstring): key [typeConverter].
+fun key2bitstring(key): bitstring [typeConverter].
+fun bitstring2nonce(bitstring): nonce [typeConverter].
+fun nonce2bitstring(nonce): bitstring [typeConverter].
+fun btaddr2bitstring(bt_addr): bitstring [typeConverter].
+fun random2bitstring(random_num): bitstring [typeConverter].
+
+(* Helper functions to get bits from a bitstring *)
+fun fist32bit(bitstring): bitstring.
+fun next32bit(bitstring): bitstring.
+fun last64bit(bitstring): bitstring.
+
+(* concatenation function *)
+fun concat(bitstring, bitstring): bitstring.
+fun first_part(bitstring): bitstring.
+fun last_part(bitstring): bitstring.
+equation forall b1: bitstring, b2: bitstring; first_part(concat(b1, b2)) = b1.
+equation forall b1: bitstring, b2: bitstring; last_part(concat(b1, b2)) = b2.
+
+fun concat9(bitstring, bitstring, bt_addr, bitstring): bitstring.
+fun firstconcat9(bitstring): bitstring.
+fun secondconcat9(bitstring): bitstring.
+fun thirdconcat9(bitstring): bt_addr.
+fun forthconcat9(bitstring): bitstring.
+equation forall b1: bitstring, b2: bitstring, addr: bt_addr, b3: bitstring; firstconcat9(concat9(b1, b2, addr, b3)) = b1.
+equation forall b1: bitstring, b2: bitstring, addr: bt_addr, b3: bitstring; secondconcat9(concat9(b1, b2, addr, b3)) = b2.
+equation forall b1: bitstring, b2: bitstring, addr: bt_addr, b3: bitstring; thirdconcat9(concat9(b1, b2, addr, b3)) = addr.
+equation forall b1: bitstring, b2: bitstring, addr: bt_addr, b3: bitstring; forthconcat9(concat9(b1, b2, addr, b3)) = b3.
+
+(* cryptographic functions defined in spec *)
+letfun h3(k: key, b: bitstring, bt1: bt_addr, bt2: bt_addr, n: nonce) =
+	bitstring2key(HMAC_SHA256(k, concat(concat(concat(b, btaddr2bitstring(bt1)), btaddr2bitstring(bt2)), nonce2bitstring(n)))).
+letfun h4(k: key, b: bitstring, bt1: bt_addr, bt2: bt_addr) =
+	bitstring2key(HMAC_SHA256(k, concat(concat(b, btaddr2bitstring(bt1)), btaddr2bitstring(bt2)))).
+letfun h5(k: key, r1: random_num, r2: random_num) =
+let sha = HMAC_SHA256(k, concat(random2bitstring(r1), random2bitstring(r2))) in
+(fist32bit(sha), next32bit(sha), bitstring2nonce(last64bit(sha))).
+letfun h6(k: bitstring, b: bitstring) = AES_CMAC(k, b).
+letfun h7(b: bitstring, k: bitstring) = AES_CMAC(k, b).
+fun mod263(bitstring): bitstring.
+letfun s1(M: bitstring) = AES_CMAC(ZERO, M).
+letfun k2(N: bitstring, P: bitstring) =
+  let SALT = s1(SMK2) in
+  let T = AES_CMAC(SALT, N) in
+  let T1 = AES_CMAC(T, concat(P, ONE)) in
+  let T2 = AES_CMAC(T, concat(concat(T1, P), TWO)) in
+  let T3 = AES_CMAC(T, concat(concat(T2, P), THREE)) in
+  mod263(concat(concat(T1, T2), T3)).
+
+(* symmetric encryption *)
+fun AES_CCM(bitstring, key, nonce): bitstring.
+reduc forall m: bitstring, k: key, n: nonce; sdec(AES_CCM(m, k, n), k, n) = m.
+
+(* function to derive session key from LTK *)
+letfun ltk2sessionk(k: bitstring, b: bitstring) = bitstring2key(AES_CMAC(k, b)).
+
+(* functions to get nonces *)
+letfun network_nonce(b1: bitstring, b2: bitstring, bt: bt_addr, b3: bitstring) =
+bitstring2nonce(concat9(b1, b2, bt, b3)).
+letfun application_nonce(b1: bitstring, bt1: bt_addr, bt2: bt_addr, b2: bitstring) =
+bitstring2nonce(concat(concat(concat(b1, btaddr2bitstring(bt1)), btaddr2bitstring(bt2)), b2)).
+
+(* derive encryption key and privacy key from net_key *)
+letfun encryption_key(b: bitstring) =
+bitstring2key(first_part(b)).
+letfun privacy_key(b: bitstring) =
+bitstring2key(last_part(b)).
+
+(* encryption function *)
+fun e(key, bitstring): bitstring.
+reduc forall msg: bitstring, k: key; dec(k, e(k, msg)) = msg.
+
+(* Mesh obfuscation mechanism *)
+fun obfuscate(bitstring, bitstring): bitstring.
+fun deobfuscate(bitstring, bitstring): bitstring.
+equation forall b1: bitstring, b2: bitstring; deobfuscate(obfuscate(b1, b2), b2) = b1.
+
+(* set input/output as precise as described *)
+set preciseActions = true.
+
+(* Since in Bluetooth (BC and BLE) reconnections, it reuse the pre-generated keys during pairing. *)
+(* We use a secret key to model the key generated during pairing. *)
+(* The pairing could be done through BC or BLE, so we model both cases. *)
+(* Mimicing the secure pairing to generate the link key for central and peripheral *)
+let BC_secure_pairing() =
+(
+  new lk: key;
+	insert bc_key_c(addr_B, lk);
+	insert bc_key_p(addr_A, lk);
+	insert le_key_c(addr_B, bitstring2key(h6(h7(SALT, key2bitstring(lk)), brle)));
+	insert le_key_p(addr_A, bitstring2key(h6(h7(SALT, key2bitstring(lk)), brle)))
+).
+
+let BLE_secure_pairing() =
+(
+  new ltk: key;
+	insert le_key_c(addr_B, ltk);
+	insert le_key_p(addr_A, ltk);
+	insert bc_key_c(addr_B, bitstring2key(h6(h7(SALT, key2bitstring(ltk)), lebr)));
+	insert bc_key_p(addr_A, bitstring2key(h6(h7(SALT, key2bitstring(ltk)), lebr)))
+).
+
+let Mesh_secure_provisioning() =
+(
+  new netkey: bitstring;
+  new appkey: key;
+  (* inindex in Mesh *)
+  new ivindex: bitstring;
+	insert mesh_net_key_c(addr_prov, netkey);
+	insert mesh_app_key_c(addr_prov, appkey);
+	insert mesh_net_key_p(addr_dev, netkey);
+	insert mesh_app_key_p(addr_dev, appkey);
+	insert mesh_iv_c(addr_prov, ivindex);
+	insert mesh_iv_p(addr_dev, ivindex)
+).
+
+let BCapp_central() =
+(
+	out(central_BT_app_out_ch, BCreq);
+	in(central_BT_app_in_ch, rsp: bitstring);
+	if rsp = BCrsp then
+	0
+).
+
+let BLEapp_central() =
+(
+	out(central_BLE_app_out_ch, BLEreq);
+	in(central_BLE_app_in_ch, rsp: bitstring);
+	if rsp = BLErsp then
+	0
+).
+
+let BC_stack_central() =
+(
+	(
+		get bc_key_c(=addr_B, lk_key) in
+		(* BC two-way authentication *)
+		new rand_m: random_num;
+		out(ch, rand_m);
+		in(ch, rand_s: random_num);
+		let (sres_m: bitstring, sres_ms: bitstring, aco: nonce) = h5(h4(lk_key, btak, addr_A, addr_B), rand_m, rand_s) in
+		out(ch, sres_m);
+		in(ch, sres_s: bitstring);
+
+		if sres_ms = sres_s then (
+			(* derive encryption key *)
+			let session_k = h3(lk_key, btak, addr_A, addr_B, aco) in
+			in(central_BT_app_out_ch, req: bitstring);
+			out(ch, AES_CCM(req, session_k, aco));
+			in(ch, d: bitstring);
+			let rsp = sdec(d, session_k, aco) in
+			out(central_BT_app_in_ch, rsp)
+		)
+	)
+).
+
+let BLE_stack_central() =
+(
+	(
+		new skdm: bitstring;
+		new ivm: bitstring;
+		out(ch, (skdm, ivm));
+		in(ch, (skds: bitstring, ivs: bitstring));
+		get le_key_c(=addr_B, ltk) in
+		(* derive session key from LTK *)
+		let session_k: key = ltk2sessionk(key2bitstring(ltk), concat(skds, skdm)) in
+		let session_n = bitstring2nonce(concat(ivs, ivm)) in
+		in(central_BLE_app_out_ch, req: bitstring);
+		out(ch, AES_CCM(req, session_k, session_n));
+		in(ch, d: bitstring);
+		let rsp = sdec(d, session_k, session_n) in
+		out(central_BLE_app_in_ch, rsp)
+	)
+).
+
+(* Reactive authentication in BLESA *)
+let BLE_stack_central_insecure() =
+(
+	new skdm: bitstring;
+	new ivm: bitstring;
+	in(central_BLE_app_out_ch, req: bitstring);
+	out(ch, req);
+	in(ch, rsp: bitstring);
+	if rsp = err then (
+		out(ch, (skdm, ivm));
+		in(ch, (skds: bitstring, ivs: bitstring));
+		get le_key_c(=addr_B, ltk) in
+		(* derive session key from LTK *)
+		let session_k: key = ltk2sessionk(key2bitstring(ltk), concat(skds, skdm)) in
+		let session_n = bitstring2nonce(concat(ivs, ivm)) in
+		out(ch, AES_CCM(req, session_k, session_n));
+		in(ch, d: bitstring);
+		let drsp = sdec(d, session_k, session_n) in
+		out(central_BLE_app_in_ch, drsp)
+	)
+	else
+	out(central_BLE_app_in_ch, rsp)
+).
+
+let BCapp_peripheral() =
+(
+	in(peripheral_BT_app_in_ch, req: bitstring);
+	out(peripheral_BT_app_out_ch, BCrsp)
+).
+
+let BLEapp_peripheral() =
+(
+	in(peripheral_BLE_app_in_ch, req: bitstring);
+	out(peripheral_BLE_app_out_ch, BLErsp)
+).
+
+let BC_stack_peripheral() =
+(
+	get bc_key_p(=addr_A, lk_key) in
+	(* BC two-way authentication *)
+	new rand_s: random_num;
+	in(ch, rand_m: random_num);
+	out(ch, rand_s);
+	in(ch, sres_m: bitstring);
+	let (sres_sm: bitstring, sres_s: bitstring, aco: nonce) = h5(h4(lk_key, btak, addr_A, addr_B), rand_m, rand_s) in
+
+	if sres_sm = sres_m then (
+		out(ch, sres_s);
+
+		(* derive encryption key *)
+		let session_k= h3(lk_key, btak, addr_A, addr_B, aco) in
+		in(ch, d: bitstring);
+		let data = sdec(d, session_k, aco) in
+		out(peripheral_BT_app_in_ch, data);
+		in(peripheral_BT_app_out_ch, r: bitstring);
+		out(ch, AES_CCM(r, session_k, aco))
+	)
+).
+
+let BC_stack_peripheral_compromised() =
+(
+	get bc_key_p(=addr_A, lk_key) in
+	new rand_s: random_num;
+	in(ch, rand_m: random_num);
+	out(ch, rand_s);
+	in(ch, sres_m: bitstring);
+	let (sres_sm: bitstring, sres_s: bitstring, aco: nonce) = h5(h4(lk_key, btak, addr_A, addr_B), rand_m, rand_s) in
+
+	if sres_sm = sres_m then (
+		out(ch, sres_s);
+		(* derive encryption key *)
+		let session_k= h3(lk_key, btak, addr_A, addr_B, aco) in
+		in(ch, d: bitstring);
+		let data = sdec(d, session_k, aco) in
+		(
+			(* Communicating with BC app via an open channel to model the compromised stack *)
+			(
+				out(compromised_ch, data);
+				in(compromised_ch, r: bitstring);
+				out(ch, AES_CCM(r, session_k, aco))
+			) |
+			(
+				out(peripheral_BT_app_in_ch, data);
+				in(peripheral_BT_app_out_ch, r: bitstring);
+				out(ch, AES_CCM(r, session_k, aco))
+			)
+		)
+	)
+).
+
+let BLE_stack_peripheral() =
+(
+	new skds: bitstring;
+	new ivs: bitstring;
+	in(ch, (skdm: bitstring, ivm: bitstring));
+	out(ch, (skds, ivs));
+	get le_key_p(=addr_A, ltk) in
+	(* derive session key from LTK *)
+	let session_k = ltk2sessionk(key2bitstring(ltk), concat(skds, skdm)) in
+	let session_n = bitstring2nonce(concat(ivs, ivm)) in
+	in(ch, d: bitstring);
+	let req = sdec(d, session_k, session_n) in
+	out(peripheral_BLE_app_in_ch, req);
+	in(peripheral_BLE_app_out_ch, rsp: bitstring);
+	out(ch, AES_CCM(rsp, session_k, session_n))
+).
+
+let BLE_stack_peripheral_compromised() =
+(
+	new skds: bitstring;
+	new ivs: bitstring;
+	in(ch, (skdm: bitstring, ivm: bitstring));
+	out(ch, (skds, ivs));
+	get le_key_p(=addr_A, ltk) in
+	let session_k: key = ltk2sessionk(key2bitstring(ltk), concat(skds, skdm)) in
+	let session_n = bitstring2nonce(concat(ivs, ivm)) in
+	in(ch, d: bitstring);
+	let req = sdec(d, session_k, session_n) in
+	(
+		out(peripheral_BLE_app_in_ch, req);
+		in(peripheral_BLE_app_out_ch, rsp: bitstring);
+		out(ch, AES_CCM(rsp, session_k, session_n))
+	) |
+	(* Communicating with BLE app via an open channel to model the compromised stack *)
+	(
+		out(compromised_ch, req);
+		in(compromised_ch, rsp: bitstring);
+		out(ch, AES_CCM(rsp, session_k, session_n))
+	)
+).
+
+let Meshapp_central() =
+(
+	new seq1: bitstring;
+	insert mesh_seq_c(addr_prov, seq1);
+	get mesh_app_key_c(=addr_prov, appkey) in
+	get mesh_iv_c(=addr_prov, ivindex) in
+	let application_n = application_nonce(seq1, addr_prov, addr_dev, ivindex) in
+	(*application level encryption *)
+	let req = AES_CCM((t1, Meshreq), appkey, application_n) in
+	out(central_Mesh_app_out_ch, req);
+
+	in(central_Mesh_app_in_ch, rsp: bitstring);
+	get mesh_seq_c(=addr_dev, seq2) in
+	let application_n = application_nonce(seq2, addr_dev, addr_prov, ivindex) in
+	let (=t2, r: bitstring) = sdec(rsp, appkey, application_n) in
+	0
+).
+
+let Mesh_stack_central() =
+(
+	get mesh_net_key_c(=addr_prov, netkey) in
+	get mesh_seq_c(=addr_prov, seq1) in
+	get mesh_iv_c(=addr_prov, ivindex) in
+	let enc_key = encryption_key(k2(netkey, ZERO)) in
+	let pri_key = privacy_key(k2(netkey, ZERO)) in
+
+	in(central_Mesh_app_out_ch, req: bitstring);
+	let network_n = network_nonce(ttl1, seq1, addr_prov, ivindex) in
+	(* network level encryption and nonce obfuscation*)
+	let encrypted = AES_CCM((t1, req), enc_key, network_n) in
+  let pecb = e(pri_key, concat(ivindex, encrypted)) in
+	out(ch, (obfuscate(nonce2bitstring(network_n), pecb), encrypted));
+
+	in(ch, (obfs: bitstring, d: bitstring));
+	(* obtain network nonce and decrypt *)
+	let pecb = e(pri_key, concat(ivindex, d)) in
+	let network_n = bitstring2nonce(deobfuscate(obfs, pecb)) in
+	let seq2 = secondconcat9(nonce2bitstring(network_n)) in
+	insert mesh_seq_c(addr_dev, seq2);
+	let (=t2, rsp: bitstring) = sdec(d, enc_key, network_n) in
+	out(central_Mesh_app_in_ch, rsp)
+).
+
+let Meshapp_peripheral() =
+(
+	get mesh_app_key_p(=addr_dev, appkey) in
+	get mesh_seq_p(=addr_prov, seq1) in
+	get mesh_iv_p(=addr_dev, ivindex) in
+	in(peripheral_Mesh_app_in_ch, req: bitstring);
+	let application_n = application_nonce(seq1, addr_prov, addr_dev, ivindex) in
+	let (=t1, r: bitstring) = sdec(req, appkey, application_n) in
+	new seq2: bitstring;
+	insert mesh_seq_p(addr_dev, seq2);
+	(*application level encryption *)
+	let application_n = application_nonce(seq2, addr_dev, addr_prov, ivindex) in
+	let rsp = AES_CCM((t2, Meshrsp), appkey, application_n)in
+	out(peripheral_Mesh_app_out_ch, rsp)
+).
+
+let Mesh_stack_peripheral() =
+(
+	get mesh_net_key_p(=addr_dev, netkey) in
+	get mesh_iv_p(=addr_dev, ivindex) in
+	let enc_key = encryption_key(k2(netkey, ZERO)) in
+  let pri_key = privacy_key(k2(netkey, ZERO)) in
+
+	in(ch, (obfs: bitstring, d: bitstring));
+	(* obtain network nonce and decrypt *)
+	let pecb = e(pri_key, concat(ivindex, d)) in
+	let network_n = bitstring2nonce(deobfuscate(obfs, pecb)) in
+	let (=t1, req: bitstring) = sdec(d, enc_key, network_n) in
+	let seq1 = secondconcat9(nonce2bitstring(network_n)) in
+	insert mesh_seq_p(addr_prov, seq1);
+	out(peripheral_Mesh_app_in_ch, req);
+
+	in(peripheral_Mesh_app_out_ch, rsp: bitstring);
+	get mesh_seq_p(=addr_dev, seq2) in
+	let network_n = network_nonce(ttl2, seq2, addr_dev, ivindex) in
+	(* network level encryption and nonce obfuscation*)
+	let encrypted = AES_CCM((t2, rsp), enc_key, network_n) in
+  let pecb = e(pri_key, concat(ivindex, encrypted)) in
+	out(ch, (obfuscate(nonce2bitstring(network_n), pecb), encrypted))
+).
+
+let Mesh_stack_peripheral_compromised() =
+(
+	get mesh_net_key_p(=addr_dev, netkey) in
+	get mesh_iv_p(=addr_dev, ivindex) in
+	let enc_key = encryption_key(k2(netkey, ZERO)) in
+  let pri_key = privacy_key(k2(netkey, ZERO)) in
+
+	in(ch, (obfs: bitstring, d: bitstring));
+	(* obtain network nonce and decrypt *)
+	let pecb = e(pri_key, concat(ivindex, d)) in
+	let network_n = bitstring2nonce(deobfuscate(obfs, pecb)) in
+	let (=t1, req: bitstring) = sdec(d, enc_key, network_n) in
+	let seq1 = secondconcat9(nonce2bitstring(network_n)) in
+	insert mesh_seq_p(addr_prov, seq1);
+	(
+		out(peripheral_Mesh_app_in_ch, req);
+
+		in(peripheral_Mesh_app_out_ch, rsp: bitstring);
+		get mesh_seq_p(=addr_dev, seq2) in
+		(* network level encryption and nonce obfuscation*)
+		let network_n = network_nonce(ttl2, seq2, addr_dev, ivindex) in
+		let encrypted = AES_CCM((t2, rsp), enc_key, network_n) in
+  	let pecb = e(pri_key, concat(ivindex, encrypted)) in
+		out(ch, (obfuscate(nonce2bitstring(network_n), pecb), encrypted))
+	) |
+	(* Communicating with Mesh app via an open channel to model the compromised stack *)
+	(
+		out(compromised_ch, req);
+		in(compromised_ch, rsp: bitstring);
+		get mesh_seq_p(=addr_dev, seq2) in
+		(* network level encryption and nonce obfuscation*)
+		let network_n = network_nonce(ttl2, seq2, addr_dev, ivindex) in
+		let encrypted = AES_CCM((t2, rsp), enc_key, network_n) in
+  	let pecb = e(pri_key, concat(ivindex, encrypted)) in
+		out(ch, (obfuscate(nonce2bitstring(network_n), pecb), encrypted))
+	)
+).
+
+(* Confidentiality properties *)
+query attacker(BCreq).
+query attacker(BCrsp).
+query attacker(BLEreq).
+query attacker(BLErsp).
+query attacker(Meshreq).
+query attacker(Meshrsp).
+
+process

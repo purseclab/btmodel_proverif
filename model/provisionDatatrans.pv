@@ -1,0 +1,548 @@
+(* open channel for data communication between central and peripheral *)
+free ch: channel.
+
+(* Mesh oob public key channel *)
+free oob_pubkey_ch: channel [private].
+
+(* User-device secure channel *)
+free prov_user_data_in: channel [private].
+free prov_user_data_out: channel [private].
+free dev_user_data_in: channel [private].
+free dev_user_data_out: channel [private].
+free central_Mesh_app_in_ch: channel [private].
+free central_Mesh_app_out_ch: channel [private].
+free peripheral_Mesh_app_in_ch: channel [private].
+free peripheral_Mesh_app_out_ch: channel [private].
+
+(* type definition *)
+type random_num.
+type public_key.
+type private_key.
+type dhkey.
+type key.
+type bt_addr.
+type confirmation.
+type nonce.
+type salt.
+type tag.
+
+(* Mesh constant value *)
+const prck: bitstring.
+const prsk: bitstring.
+const prsn: bitstring.
+const ZERO: bitstring.
+const zero: random_num.
+const SMK2: bitstring.
+const ONE: bitstring.
+const TWO: bitstring.
+const THREE: bitstring.
+
+(* Mesh tables used to pass data between steps *)
+table pubkey_table_prov(bt_addr, public_key).
+table dhkey_table_prov(bt_addr, dhkey).
+table key_table_prov(bt_addr, key).
+table nonce_table_prov(bt_addr, nonce).
+table mesh_net_key_c(bt_addr, bitstring).
+table mesh_app_key_c(bt_addr, key).
+table mesh_seq_c(bt_addr, bitstring).
+table mesh_iv_c(bt_addr, bitstring).
+table pi_table_prov(bt_addr, bitstring).
+table pcap_table_prov(bt_addr, bitstring).
+
+table pubkey_table_dev(bt_addr, public_key).
+table dhkey_table_dev(bt_addr, dhkey).
+table key_table_dev(bt_addr, key).
+table nonce_table_dev(bt_addr, nonce).
+table mesh_net_key_p(bt_addr, bitstring).
+table mesh_app_key_p(bt_addr, key).
+table mesh_seq_p(bt_addr, bitstring).
+table mesh_iv_p(bt_addr, bitstring).
+table pi_table_dev(bt_addr, bitstring).
+table pcap_table_dev(bt_addr, bitstring).
+
+(* tags *)
+free t1: tag.
+free t2: tag.
+
+(* Mesh device addreses *)
+free addr_prov: bt_addr.
+free addr_dev: bt_addr.
+
+(* Secret number used for static OOB *)
+free static_oobdata: random_num [private].
+
+(* Provisioning sensitive data *)
+free keys: bitstring [private].
+free p_complete: bitstring [private].
+free Meshreq: bitstring [private].
+free Meshrsp: bitstring [private].
+
+(* Mesh PDUs *)
+free PI: bitstring [private].
+free PCap: bitstring [private].
+free PS: bitstring [private].
+
+free ttl1: bitstring.
+free ttl2: bitstring.
+free ivindex: bitstring [private].
+
+(* Mesh pvovisioning events *)
+event recv_prov(dhkey).
+event recv_dev(dhkey).
+event send_prov(dhkey).
+event send_dev(dhkey).
+
+(* Deffie-Hellman key exchange *)
+type G.
+type exponent.
+const gen: G.
+fun p256(G, exponent): G.
+equation forall x: exponent, y: exponent; p256(p256(gen, x), y) = p256(p256(gen, y), x).
+
+(* type conversion functions *)
+fun pubkey2bitstring(public_key): bitstring [typeConverter].
+fun bitstring2salt(bitstring): salt [typeConverter].
+fun salt2bitstring(salt): bitstring [typeConverter].
+fun bitstring2nonce(bitstring): nonce [typeConverter].
+fun bitstring2key(bitstring): key [typeConverter].
+fun key2bitstring(key): bitstring [typeConverter].
+fun dhkey2bitstring(dhkey): bitstring [typeConverter].
+fun random2bitstring(random_num): bitstring [typeConverter].
+fun key2nonce(key): nonce [typeConverter].
+fun exponent2private_key(exponent): private_key [typeConverter].
+fun private_key2exponent(private_key): exponent [typeConverter].
+fun G2public_key(G): public_key [typeConverter].
+fun public_key2G(public_key): G [typeConverter].
+fun G2dhkey(G): dhkey [typeConverter].
+fun btaddr2bitstring(bt_addr): bitstring [typeConverter].
+fun nonce2bitstring(nonce): bitstring [typeConverter].
+
+(* private key to public key *)
+letfun get_pub_key(pri_k: private_key) = G2public_key(p256(gen, private_key2exponent(pri_k))).
+
+(* dhkey calculation *)
+letfun get_dhkey(pub_k: public_key, pri_k: private_key) = G2dhkey(p256(public_key2G(pub_k), private_key2exponent(pri_k))).
+
+(* Mesh cryptographic functions *)
+fun AES_CMAC(bitstring, bitstring): bitstring.
+fun concat(bitstring, bitstring): bitstring.
+fun first_part(bitstring): bitstring.
+fun last_part(bitstring): bitstring.
+equation forall b1: bitstring, b2: bitstring; first_part(concat(b1, b2)) = b1.
+equation forall b1: bitstring, b2: bitstring; last_part(concat(b1, b2)) = b2.
+letfun k1(dhk: dhkey, s: salt, b: bitstring) =
+let T = AES_CMAC(salt2bitstring(s), dhkey2bitstring(dhk)) in
+bitstring2key(AES_CMAC(T, b)).
+letfun confirm_value(cfk: key, r1: random_num, r2: random_num)=
+AES_CMAC(key2bitstring(cfk), concat(random2bitstring(r1), random2bitstring(r2))).
+
+fun mod263(bitstring): bitstring.
+letfun s1(M: bitstring) = bitstring2salt(AES_CMAC(ZERO, M)).
+letfun k2(N: bitstring, P: bitstring) =
+  let SALT = salt2bitstring(s1(SMK2)) in
+  let T = AES_CMAC(SALT, N) in
+  let T1 = AES_CMAC(T, concat(P, ONE)) in
+  let T2 = AES_CMAC(T, concat(concat(T1, P), TWO)) in
+  let T3 = AES_CMAC(T, concat(concat(T2, P), THREE)) in
+  mod263(concat(concat(T1, T2), T3)).
+
+(* symmetric encryption *)
+fun AES_CCM(bitstring, key, nonce): bitstring.
+reduc forall m: bitstring, k: key, n: nonce; sdec(AES_CCM(m, k, n), k, n) = m.
+
+(* concatenation function *)
+fun concat9(bitstring, bitstring, bt_addr, bitstring): bitstring.
+fun firstconcat9(bitstring): bitstring.
+fun secondconcat9(bitstring): bitstring.
+fun thirdconcat9(bitstring): bt_addr.
+fun forthconcat9(bitstring): bitstring.
+equation forall b1: bitstring, b2: bitstring, addr: bt_addr, b3: bitstring; firstconcat9(concat9(b1, b2, addr, b3)) = b1.
+equation forall b1: bitstring, b2: bitstring, addr: bt_addr, b3: bitstring; secondconcat9(concat9(b1, b2, addr, b3)) = b2.
+equation forall b1: bitstring, b2: bitstring, addr: bt_addr, b3: bitstring; thirdconcat9(concat9(b1, b2, addr, b3)) = addr.
+equation forall b1: bitstring, b2: bitstring, addr: bt_addr, b3: bitstring; forthconcat9(concat9(b1, b2, addr, b3)) = b3.
+
+(* functions to get nonces *)
+letfun network_nonce(b1: bitstring, b2: bitstring, bt: bt_addr, b3: bitstring) =
+bitstring2nonce(concat9(b1, b2, bt, b3)).
+letfun application_nonce(b1: bitstring, bt1: bt_addr, bt2: bt_addr, b2: bitstring) =
+bitstring2nonce(concat(concat(concat(b1, btaddr2bitstring(bt1)), btaddr2bitstring(bt2)), b2)).
+
+(* get net_key and app_key from keys *)
+fun get_net_key(bitstring): bitstring.
+fun get_app_key(bitstring): key.
+
+(* derive encryption key and privacy key from net_key *)
+letfun encryption_key(b: bitstring) =
+bitstring2key(first_part(b)).
+letfun privacy_key(b: bitstring) =
+bitstring2key(last_part(b)).
+
+(* encryption function *)
+fun e(key, bitstring): bitstring.
+reduc forall msg: bitstring, k: key; dec(k, e(k, msg)) = msg.
+
+(* Mesh obfuscation mechanism *)
+fun obfuscate(bitstring, bitstring): bitstring.
+fun deobfuscate(bitstring, bitstring): bitstring.
+equation forall b1: bitstring, b2: bitstring; deobfuscate(obfuscate(b1, b2), b2) = b1.
+
+(* set input/output as precise as described *)
+set preciseActions = true.
+
+(* OutputOOB authentication user action *)
+let outputoob_user() =
+(
+  in(dev_user_data_out, auth_val: random_num);
+  out(prov_user_data_in, auth_val)
+).
+
+(* InputOOB authentication user action *)
+let inputoob_user() =
+(
+  in(prov_user_data_out, auth_val: random_num);
+  out(dev_user_data_in, auth_val)
+).
+
+(* step 1 provisioner *)
+let invite_prov() =
+(
+	out(ch, PI);
+	in(ch, ps: bitstring);
+	insert pi_table_prov(addr_dev, PI);
+	insert pcap_table_prov(addr_dev, ps)
+).
+
+(* step 1 device *)
+let invite_dev() =
+(
+	in(ch, pi: bitstring);
+	out(ch, PCap);
+	insert pi_table_dev(addr_prov, pi);
+	insert pcap_table_dev(addr_prov, PCap)
+).
+
+(* step 2 provisioner, public key exchange no oob *)
+let pubkey_exchange_noob_prov(pri_k: private_key) =
+(
+	get pcap_table_prov(=addr_dev, pcap) in
+	out(ch, PS);
+	let pk_prov = get_pub_key(pri_k) in
+	out(ch, pk_prov);
+	in(ch, pk_dev: public_key);
+	let dhkey_AB = get_dhkey(pk_dev, pri_k) in
+	insert pubkey_table_prov(addr_prov, pk_prov);
+	insert pubkey_table_prov(addr_dev, pk_dev);
+	insert dhkey_table_prov(addr_prov, dhkey_AB)
+).
+
+(* step 2 device, public key exchange no oob *)
+let pubkey_exchange_noob_dev(pri_k: private_key) =
+(
+	get pi_table_dev(=addr_prov, pi) in
+	in(ch, PS: bitstring);
+	in(ch, pk_prov: public_key);
+	let pk_dev = get_pub_key(pri_k) in
+	out(ch, pk_dev);
+	let dhkey_BA = get_dhkey(pk_prov, pri_k) in
+	insert pubkey_table_dev(addr_prov, pk_prov);
+	insert pubkey_table_dev(addr_dev, pk_dev);
+	insert dhkey_table_dev(addr_dev, dhkey_BA)
+).
+
+(* step 2 provisioner, public key exchange oob *)
+let pubkey_exchange_oob_prov(pri_k: private_key) =
+(
+	get pcap_table_prov(=addr_dev, pcap) in
+	out(ch, PS);
+	in(oob_pubkey_ch, pk_dev: public_key);
+	let pk_prov = get_pub_key(pri_k) in
+	out(ch, pk_prov);
+	let dhkey_AB = get_dhkey(pk_dev, pri_k) in
+	insert pubkey_table_prov(addr_prov, pk_prov);
+	insert pubkey_table_prov(addr_dev, pk_dev);
+	insert dhkey_table_prov(addr_prov, dhkey_AB)
+).
+
+(* step 2 device, public key exchange oob *)
+let pubkey_exchange_oob_dev(pri_k: private_key) =
+(
+	get pi_table_dev(=addr_prov, pi) in
+	in(ch, PS: bitstring);
+	let pk_dev = get_pub_key(pri_k) in
+	out(oob_pubkey_ch, pk_dev);
+	in(ch, pk_prov: public_key);
+	let dhkey_BA = get_dhkey(pk_prov, pri_k) in
+	insert pubkey_table_dev(addr_prov, pk_prov);
+	insert pubkey_table_dev(addr_dev, pk_dev);
+	insert dhkey_table_dev(addr_dev, dhkey_BA)
+).
+
+(* step 3 provisioner, output oob *)
+let auth_outputoob_prov() =
+(
+	get pubkey_table_prov(=addr_prov, pk_prov) in
+	get pubkey_table_prov(=addr_dev, pk_dev) in
+	get dhkey_table_prov(=addr_prov, dhkey_AB) in
+	new rand_prov: random_num;
+	in(prov_user_data_in, auth_val: random_num);
+	let st = s1(concat(concat(concat(concat(PI, PCap), PS), pubkey2bitstring(pk_prov)), pubkey2bitstring(pk_dev))) in
+	let cfkey = k1(dhkey_AB, st, prck) in
+	let pc_A = confirm_value(cfkey, rand_prov, auth_val) in
+	out(ch, pc_A);
+	in(ch, pc_B: bitstring);
+	event send_prov(dhkey_AB);
+	out(ch, rand_prov);
+	in(ch, rand_dev: random_num);
+	if pc_B = confirm_value(cfkey, rand_dev, auth_val) then
+	event recv_prov(dhkey_AB);
+	let cfst = s1(concat(concat(salt2bitstring(st), random2bitstring(rand_prov)), random2bitstring(rand_dev))) in
+	insert key_table_prov(addr_dev, k1(dhkey_AB, cfst, prsk));
+	insert nonce_table_prov(addr_dev, key2nonce(k1(dhkey_AB, cfst, prsn)))
+).
+
+(* step 3 device, output oob *)
+let auth_outputoob_dev() =
+(
+	get pubkey_table_dev(=addr_prov, pk_prov) in
+	get pubkey_table_dev(=addr_dev, pk_dev) in
+	get dhkey_table_dev(=addr_dev, dhkey_BA) in
+	new rand_dev: random_num;
+	new auth_val: random_num;
+	out(dev_user_data_out, auth_val);
+	in(ch, pc_A: bitstring);
+	let st = s1(concat(concat(concat(concat(PI, PCap), PS), pubkey2bitstring(pk_prov)), pubkey2bitstring(pk_dev))) in
+	let cfkey = k1(dhkey_BA, st, prck) in
+	let pc_B = confirm_value(cfkey, rand_dev, auth_val) in
+	out(ch, pc_B);
+	in(ch, rand_prov: random_num);
+	if pc_A = confirm_value(cfkey, rand_prov, auth_val) then
+	event recv_dev(dhkey_BA);
+	event send_dev(dhkey_BA);
+	out(ch, rand_dev);
+	let cfst = s1(concat(concat(salt2bitstring(st), random2bitstring(rand_prov)), random2bitstring(rand_dev))) in
+	insert key_table_dev(addr_prov, k1(dhkey_BA, cfst, prsk));
+	insert nonce_table_dev(addr_prov, key2nonce(k1(dhkey_BA, cfst, prsn)))
+).
+
+(* step 3 provisioner, input oob *)
+let auth_inputoob_prov() =
+(
+	get pubkey_table_prov(=addr_prov, pk_prov) in
+	get pubkey_table_prov(=addr_dev, pk_dev) in
+	get dhkey_table_prov(=addr_prov, dhkey_AB) in
+	new rand_prov: random_num;
+	new auth_val: random_num;
+	out(prov_user_data_out, auth_val);
+	let st = s1(concat(concat(concat(concat(PI, PCap), PS), pubkey2bitstring(pk_prov)), pubkey2bitstring(pk_dev))) in
+	let cfkey = k1(dhkey_AB, st, prck) in
+	let pc_A = confirm_value(cfkey, rand_prov, auth_val) in
+	out(ch, pc_A);
+	in(ch, pc_B: bitstring);
+	event send_prov(dhkey_AB);
+	out(ch, rand_prov);
+	in(ch, rand_dev: random_num);
+	if pc_B = confirm_value(cfkey, rand_dev, auth_val) then
+	event recv_prov(dhkey_AB);
+	let cfst = s1(concat(concat(salt2bitstring(st), random2bitstring(rand_prov)), random2bitstring(rand_dev))) in
+	insert key_table_prov(addr_dev, k1(dhkey_AB, cfst, prsk));
+	insert nonce_table_prov(addr_dev, key2nonce(k1(dhkey_AB, cfst, prsn)))
+).
+
+(* step 3 device, input oob *)
+let auth_inputoob_dev() =
+(
+	get pubkey_table_dev(=addr_prov, pk_prov) in
+	get pubkey_table_dev(=addr_dev, pk_dev) in
+	get dhkey_table_dev(=addr_dev, dhkey_BA) in
+	new rand_dev: random_num;
+	in(dev_user_data_in, auth_val: random_num);
+	in(ch, pc_A: bitstring);
+	let st = s1(concat(concat(concat(concat(PI, PCap), PS), pubkey2bitstring(pk_prov)), pubkey2bitstring(pk_dev))) in
+	let cfkey = k1(dhkey_BA, st, prck) in
+	let pc_B = confirm_value(cfkey, rand_dev, auth_val) in
+	out(ch, pc_B);
+	in(ch, rand_prov: random_num);
+	if pc_A = confirm_value(cfkey, rand_prov, auth_val) then
+	event recv_dev(dhkey_BA);
+	event send_dev(dhkey_BA);
+	out(ch, rand_dev);
+	let cfst = s1(concat(concat(salt2bitstring(st), random2bitstring(rand_prov)), random2bitstring(rand_dev))) in
+	insert key_table_dev(addr_prov, k1(dhkey_BA, cfst, prsk));
+	insert nonce_table_dev(addr_prov, key2nonce(k1(dhkey_BA, cfst, prsn)))
+).
+
+(* step 3 provisioner *)
+(* use static oobdata or zero when no oobdata *)
+let auth_staticoob_prov(oobdata: random_num) =
+(
+	get pubkey_table_prov(=addr_prov, pk_prov) in
+	get pubkey_table_prov(=addr_dev, pk_dev) in
+	get dhkey_table_prov(=addr_prov, dhkey_AB) in
+	new rand_prov: random_num;
+	let st = s1(concat(concat(concat(concat(PI, PCap), PS), pubkey2bitstring(pk_prov)), pubkey2bitstring(pk_dev))) in
+	let cfkey = k1(dhkey_AB, st, prck) in
+	let pc_A = confirm_value(cfkey, rand_prov, oobdata) in
+	out(ch, pc_A);
+	in(ch, pc_B: bitstring);
+	event send_prov(dhkey_AB);
+	out(ch, rand_prov);
+	in(ch, rand_dev: random_num);
+	if pc_B = confirm_value(cfkey, rand_dev, oobdata) then
+	event recv_prov(dhkey_AB);
+	let cfst = s1(concat(concat(salt2bitstring(st), random2bitstring(rand_prov)), random2bitstring(rand_dev))) in
+	insert key_table_prov(addr_dev, k1(dhkey_AB, cfst, prsk));
+	insert nonce_table_prov(addr_dev, key2nonce(k1(dhkey_AB, cfst, prsn)))
+).
+
+(* step 3 device *)
+(* use static oobdata or zero when no oobdata *)
+let auth_staticoob_dev(oobdata: random_num) =
+(
+	get pubkey_table_dev(=addr_prov, pk_prov) in
+	get pubkey_table_dev(=addr_dev, pk_dev) in
+	get dhkey_table_dev(=addr_dev, dhkey_BA) in
+	new rand_dev: random_num;
+	in(ch, pc_A: bitstring);
+	let st = s1(concat(concat(concat(concat(PI, PCap), PS), pubkey2bitstring(pk_prov)), pubkey2bitstring(pk_dev))) in
+	let cfkey = k1(dhkey_BA, st, prck) in
+	let pc_B = confirm_value(cfkey, rand_dev, oobdata) in
+	out(ch, pc_B);
+	in(ch, rand_prov: random_num);
+	if pc_A = confirm_value(cfkey, rand_prov, oobdata) then
+	event recv_dev(dhkey_BA);
+	event send_dev(dhkey_BA);
+	out(ch, rand_dev);
+	let cfst = s1(concat(concat(salt2bitstring(st), random2bitstring(rand_prov)), random2bitstring(rand_dev))) in
+	insert key_table_dev(addr_prov, k1(dhkey_BA, cfst, prsk));
+	insert nonce_table_dev(addr_prov, key2nonce(k1(dhkey_BA, cfst, prsn)))
+).
+
+(* step 4 provisioner *)
+let send_data_prov() =
+(
+	get key_table_prov(=addr_dev, sk) in
+	get nonce_table_prov(=addr_dev, sn) in
+	out(ch, AES_CCM((ivindex, keys), sk, sn));
+	in(ch, enc_d: bitstring);
+	let data = sdec(enc_d, sk, sn) in
+	insert mesh_net_key_c(addr_prov, get_net_key(keys));
+	insert mesh_app_key_c(addr_prov, get_app_key(keys));
+	insert mesh_iv_c(addr_prov, ivindex);
+	0
+).
+
+(* step 4 device *)
+let recv_data_dev() =
+(
+	get key_table_dev(=addr_prov, sk) in
+	get nonce_table_dev(=addr_prov, sn) in
+	in(ch, enc_d: bitstring);
+	let (iv: bitstring, data: bitstring) = sdec(enc_d, sk, sn) in
+	insert mesh_net_key_p(addr_dev, get_net_key(data));
+	insert mesh_app_key_p(addr_dev, get_app_key(data));
+	insert mesh_iv_p(addr_dev, iv);
+	out(ch, AES_CCM(p_complete, sk, sn))
+).
+
+let Meshapp_central() =
+(
+	new seq1: bitstring;
+	insert mesh_seq_c(addr_prov, seq1);
+	get mesh_app_key_c(=addr_prov, appkey) in
+	get mesh_iv_c(=addr_prov, ivindex) in
+	(*application level encryption *)
+	let application_n = application_nonce(seq1, addr_prov, addr_dev, ivindex) in
+	let req = AES_CCM((t1, Meshreq), appkey, application_n) in
+	out(central_Mesh_app_out_ch, req);
+
+	in(central_Mesh_app_in_ch, rsp: bitstring);
+	get mesh_seq_c(=addr_dev, seq2) in
+	let application_n = application_nonce(seq2, addr_dev, addr_prov, ivindex) in
+	let (=t2, r: bitstring) = sdec(rsp, appkey, application_n) in
+	0
+).
+
+let Mesh_stack_central() =
+(
+	get mesh_net_key_c(=addr_prov, netkey) in
+	get mesh_seq_c(=addr_prov, seq1) in
+	get mesh_iv_c(=addr_prov, ivindex) in
+	let enc_key = encryption_key(k2(netkey, ZERO)) in
+	let pri_key = privacy_key(k2(netkey, ZERO)) in
+
+	in(central_Mesh_app_out_ch, req: bitstring);
+	(* network level encryption and nonce obfuscation*)
+	let network_n = network_nonce(ttl1, seq1, addr_prov, ivindex) in
+	let encrypted = AES_CCM((t1, req), enc_key, network_n) in
+  let pecb = e(pri_key, concat(ivindex, encrypted)) in
+	out(ch, (obfuscate(nonce2bitstring(network_n), pecb), encrypted));
+
+	in(ch, (obfs: bitstring, d: bitstring));
+	(* obtain network nonce and decrypt *)
+	let pecb = e(pri_key, concat(ivindex, d)) in
+	let network_n = bitstring2nonce(deobfuscate(obfs, pecb)) in
+	let seq2 = secondconcat9(nonce2bitstring(network_n)) in
+	insert mesh_seq_c(addr_dev, seq2);
+	let (=t2, rsp: bitstring) = sdec(d, enc_key, network_n) in
+	out(central_Mesh_app_in_ch, rsp)
+).
+
+let Meshapp_peripheral() =
+(
+	get mesh_app_key_p(=addr_dev, appkey) in
+	get mesh_seq_p(=addr_prov, seq1) in
+	get mesh_iv_p(=addr_dev, ivindex) in
+	in(peripheral_Mesh_app_in_ch, req: bitstring);
+	let application_n = application_nonce(seq1, addr_prov, addr_dev, ivindex) in
+	let (=t1, r: bitstring) = sdec(req, appkey, application_n) in
+	new seq2: bitstring;
+	insert mesh_seq_p(addr_dev, seq2);
+	(*application level encryption *)
+	let application_n = application_nonce(seq2, addr_dev, addr_prov, ivindex) in
+	let rsp = AES_CCM((t2, Meshrsp), appkey, application_n)in
+	out(peripheral_Mesh_app_out_ch, rsp)
+).
+
+let Mesh_stack_peripheral() =
+(
+	get mesh_net_key_p(=addr_dev, netkey) in
+	get mesh_iv_p(=addr_dev, ivindex) in
+	let enc_key = encryption_key(k2(netkey, ZERO)) in
+  let pri_key = privacy_key(k2(netkey, ZERO)) in
+
+	in(ch, (obfs: bitstring, d: bitstring));
+	(* obtain network nonce and decrypt *)
+	let pecb = e(pri_key, concat(ivindex, d)) in
+	let network_n = bitstring2nonce(deobfuscate(obfs, pecb)) in
+	let (=t1, req: bitstring) = sdec(d, enc_key, network_n) in
+	let seq1 = secondconcat9(nonce2bitstring(network_n)) in
+	insert mesh_seq_p(addr_prov, seq1);
+	out(peripheral_Mesh_app_in_ch, req);
+
+	in(peripheral_Mesh_app_out_ch, rsp: bitstring);
+	get mesh_seq_p(=addr_dev, seq2) in
+	(* network level encryption and nonce obfuscation*)
+	let network_n = network_nonce(ttl2, seq2, addr_dev, ivindex) in
+	let encrypted = AES_CCM((t2, rsp), enc_key, network_n) in
+  let pecb = e(pri_key, concat(ivindex, encrypted)) in
+	out(ch, (obfuscate(nonce2bitstring(network_n), pecb), encrypted))
+).
+
+(* Verified security properties *)
+query dhk: dhkey; event(recv_prov(dhk)) ==> event(send_dev(dhk)).
+query dhk: dhkey; event(recv_dev(dhk)) ==> event(send_prov(dhk)).
+query attacker(keys).
+query attacker(p_complete).
+
+(* Strong secrecy property *)
+noninterf keys.
+
+(* Confidentiality property *)
+query attacker(Meshreq).
+query attacker(Meshrsp).
+
+process
+new exp_P: exponent;
+new exp_D: exponent;
+let pri_P = exponent2private_key(exp_P) in
+let pri_D = exponent2private_key(exp_D) in

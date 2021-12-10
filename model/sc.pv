@@ -1,0 +1,502 @@
+(* open channel for data communication between central and peripheral *)
+free ch: channel.
+
+(* secure channels for user interaction with central and peripheral *)
+free central_user_data_in: channel [private].
+free central_user_data_out: channel [private].
+free central_user_ui: channel [private].
+free peripheral_user_data_in: channel [private].
+free peripheral_user_data_out: channel [private].
+free peripheral_user_ui: channel [private].
+
+(* secure oob channel *)
+free oob_in_ch: channel [private].
+free oob_out_ch: channel [private].
+
+(* type defination *)
+type random_num.
+type public_key.
+type private_key.
+type dhkey.
+type mackey.
+type key.
+type bt_addr.
+type iocap.
+type confirmation.
+type nonce.
+
+(* BLE constant value *)
+const zero: random_num.
+const one: bitstring.
+const SALT: bitstring.
+const btle: bitstring.
+const lebr: bitstring.
+const L256: bitstring.
+
+(* BLE tables used to pass data between steps *)
+table p1c(bt_addr, public_key, public_key, dhkey).
+table p1p(bt_addr, public_key, public_key, dhkey).
+table p2c(bt_addr, random_num, random_num, random_num, random_num, dhkey).
+table p2p(bt_addr, random_num, random_num, random_num, random_num, dhkey).
+
+(* Database for storing generated keys during pairing *)
+table bc_key_c(bt_addr, key).
+table le_key_c(bt_addr, key).
+table bc_key_p(bt_addr, key).
+table le_key_p(bt_addr, key).
+
+(* BLE device addresses *)
+free addr_A: bt_addr.
+free addr_B: bt_addr.
+
+(* io capabilities *)
+free iocap_A: iocap.
+free iocap_B: iocap.
+
+(* yes/no confirmation of 6-digit code comparison *)
+free yes_confirm: confirmation.
+free no_confirm: confirmation.
+
+
+(* Type conversion helper functions *)
+fun random_num2key(random_num): key [typeConverter].
+fun bitstring2key(bitstring): key [typeConverter].
+fun pubkey2bitstring(public_key): bitstring [typeConverter].
+fun pubkey2key(public_key): key [typeConverter].
+fun random2bitstring(random_num): bitstring [typeConverter].
+fun btaddr2bitstring(bt_addr): bitstring [typeConverter].
+fun iocap2bitstring(iocap): bitstring [typeConverter].
+fun dhkey2bitstring(dhkey): bitstring [typeConverter].
+fun bitstring2mackey(bitstring): mackey [typeConverter].
+fun mackey2key(mackey): key [typeConverter].
+
+(* Concatenation helper functions *)
+fun concat(bitstring, bitstring): bitstring.
+fun first_part(bitstring): bitstring.
+fun last_part(bitstring): bitstring.
+equation forall b1: bitstring, b2: bitstring; first_part(concat(b1, b2)) = b1.
+equation forall b1: bitstring, b2: bitstring; last_part(concat(b1, b2)) = b2.
+
+(* Helper functions to get bits from a bitstring *)
+fun fist32bit(bitstring): bitstring.
+fun next32bit(bitstring): bitstring.
+fun last64bit(bitstring): bitstring.
+
+(* BLE defined functions from bluetooth spec *)
+fun AES_CMAC(key, bitstring): bitstring.
+letfun h6(k: key, b: bitstring) =
+bitstring2key(AES_CMAC(k, b)).
+letfun h7(b: bitstring, k: key) =
+bitstring2key(AES_CMAC(k, b)).
+
+(* cryptographic functions defined in spec *)
+letfun f4(pk1: public_key, pk2: public_key, r1: random_num, r2: random_num) =
+    AES_CMAC(random_num2key(r1), concat(concat(pubkey2bitstring(pk1), pubkey2bitstring(pk2)), random2bitstring(r2))).
+
+letfun f5(dhk: dhkey, r1: random_num, r2: random_num, bt1: bt_addr, bt2: bt_addr) =
+    let T = AES_CMAC(bitstring2key(SALT), dhkey2bitstring(dhk)) in
+    let mkey = AES_CMAC(bitstring2key(T), concat(concat(concat(concat(concat(concat(random2bitstring(zero), btle), random2bitstring(r1)), random2bitstring(r2)), btaddr2bitstring(bt1)), btaddr2bitstring(bt2)), L256)) in
+    let ltk = AES_CMAC(bitstring2key(T), concat(concat(concat(concat(concat(concat(one, btle), random2bitstring(r1)), random2bitstring(r2)), btaddr2bitstring(bt1)), btaddr2bitstring(bt2)), L256)) in
+    (bitstring2mackey(mkey), bitstring2key(ltk)).
+
+letfun f6(mkey: mackey, r1: random_num, r2: random_num, r3: random_num, i: iocap, bt1: bt_addr, bt2: bt_addr) =
+AES_CMAC(mackey2key(mkey), concat(concat(concat(concat(concat(random2bitstring(r1), random2bitstring(r2)), random2bitstring(r3)), iocap2bitstring(i)), btaddr2bitstring(bt1)), btaddr2bitstring(bt2))).
+
+letfun g2(pk1: public_key, pk2: public_key, r1: random_num, r2: random_num) =
+AES_CMAC(pubkey2key(pk1), concat(concat(pubkey2bitstring(pk2), random2bitstring(r1)), random2bitstring(r2))).
+
+
+(* Deffie-Hellman key exchange *)
+type G.
+type exponent.
+const gen: G.
+fun p256(G, exponent): G.
+equation forall x: exponent, y: exponent; p256(p256(gen, x), y) = p256(p256(gen, y), x).
+
+fun exponent2private_key(exponent): private_key [typeConverter].
+fun private_key2exponent(private_key): exponent [typeConverter].
+fun G2public_key(G): public_key [typeConverter].
+fun public_key2G(public_key): G [typeConverter].
+fun G2dhkey(G): dhkey [typeConverter].
+
+(* private key to public key *)
+letfun get_pub_key(pri_k: private_key) = G2public_key(p256(gen, private_key2exponent(pri_k))).
+
+(* dhkey calculation *)
+letfun get_dhkey(pub_k: public_key, pri_k: private_key) = G2dhkey(p256(public_key2G(pub_k), private_key2exponent(pri_k))).
+
+(* symmetric encryption *)
+fun AES_CCM(bitstring, key, nonce): bitstring.
+reduc forall m: bitstring, k: key, n: nonce; sdec(AES_CCM(m, k, n), k, n) = m.
+
+(* BLE pairing events *)
+event send_central(dhkey).
+event recv_central(dhkey).
+event send_peripheral(dhkey).
+event recv_peripheral(dhkey).
+
+(* set input/output as precise as described *)
+set preciseActions = true.
+
+(* step 1 public key exchange central *)
+let step1c(pri_C: private_key) =
+(
+	let pk_A = get_pub_key(pri_C) in
+	out(ch, pk_A);
+	in(ch, pk_B: public_key);
+	let dhkey_AB = get_dhkey(pk_B, pri_C) in
+	insert p1c(addr_B, pk_A, pk_B, dhkey_AB)
+).
+
+(* step 1 public key exchange peripheral *)
+let step1p(pri_P: private_key) =
+(
+	let pk_B = get_pub_key(pri_P) in
+	in(ch, pk_A: public_key);
+	out(ch, pk_B);
+	let dhkey_BA = get_dhkey(pk_A, pri_P) in
+	insert p1p(addr_A, pk_A, pk_B, dhkey_BA)
+).
+
+(* step 2 auth 1 just works central *)
+let step2cjw() =
+(
+	get p1c(=addr_B, pk_A, pk_B, dhkey_AB) in
+	new na: random_num;
+	let ra = zero in
+	let rb = zero in
+	in(ch, cb: bitstring);
+	out(ch, na);
+	in(ch, nb: random_num);
+	if cb = f4(pk_B, pk_A, nb, zero) then
+	insert p2c(addr_B, na, nb, ra, rb, dhkey_AB)
+).
+
+(* step 2 auth 1 just works peripheral *)
+let step2pjw() =
+(
+	get p1p(=addr_A, pk_A, pk_B, dhkey_BA) in
+	new nb: random_num;
+	let ra = zero in
+	let rb = zero in
+	let cb = f4(pk_B, pk_A, nb, zero) in
+	out(ch, cb);
+	in(ch, na: random_num);
+	out(ch, nb);
+	insert p2p(addr_A, na, nb, ra, rb, dhkey_BA)
+).
+
+(* step 2 auth 1 numeric comparison central *)
+let step2cnc() =
+(
+	get p1c(=addr_B, pk_A, pk_B, dhkey_AB) in
+	new na: random_num;
+	let ra = zero in
+	let rb = zero in
+	in(ch, cb: bitstring);
+	out(ch, na);
+	in(ch, nb: random_num);
+	if cb = f4(pk_B, pk_A, nb, zero) then
+	out(central_user_data_out, g2(pk_A, pk_B, na, nb));
+	in(central_user_ui, confirm: confirmation);
+	if confirm = yes_confirm then
+	insert p2c(addr_B, na, nb, ra, rb, dhkey_AB)
+).
+
+(* step 2 auth 1 numeric comparison peripheral *)
+let step2pnc() =
+(
+	get p1p(=addr_A, pk_A, pk_B, dhkey_BA) in
+	new nb: random_num;
+	let ra = zero in
+	let rb = zero in
+	let cb = f4(pk_B, pk_A, nb, zero) in
+	out(ch, cb);
+	in(ch, na: random_num);
+	out(ch, nb);
+	out(peripheral_user_data_out, g2(pk_A, pk_B, na, nb));
+	in(peripheral_user_ui, confirm: confirmation);
+	if confirm = yes_confirm then
+	insert p2p(addr_A, na, nb, ra, rb, dhkey_BA)
+).
+
+(* step 2 auth 1 passkey entry central *)
+let step2cpeout() =
+(
+	get p1c(=addr_B, pk_A, pk_B, dhkey_AB) in
+	new ra: random_num;
+	let rb = ra in
+	out(central_user_data_out, ra);
+	in(central_user_ui, confirm: confirmation);
+	if confirm = yes_confirm then
+	new na: random_num;
+	let ca = f4(pk_A, pk_B, na, ra) in
+	out(ch, ca);
+	in(ch, cb: bitstring);
+	out(ch, na);
+	in(ch, nb: random_num);
+	if cb = f4(pk_B, pk_A, nb, ra) then
+	insert p2c(addr_B, na, nb, ra, rb, dhkey_AB)
+).
+
+(* step 2 auth 1 passkey entry peripheral *)
+let step2ppein() =
+(
+	get p1p(=addr_A, pk_A, pk_B, dhkey_BA) in
+	in(peripheral_user_data_in, rb: random_num);
+	new nb: random_num;
+	let ra = rb in
+	let cb = f4(pk_B, pk_A, nb, rb) in
+	in(ch, ca: bitstring);
+	out(ch, cb);
+	in(ch, na: random_num);
+	if ca = f4(pk_A, pk_B, na, rb) then
+	out(ch, nb);
+	insert p2p(addr_A, na, nb, ra, rb, dhkey_BA)
+).
+
+(* step 2 auth 1 passkey entry central *)
+let step2cpein() =
+(
+	get p1c(=addr_B, pk_A, pk_B, dhkey_AB) in
+	in(central_user_data_in, ra: random_num);
+	let rb = ra in
+	new na: random_num;
+	let ca = f4(pk_A, pk_B, na, ra) in
+	out(ch, ca);
+	in(ch, cb: bitstring);
+	out(ch, na);
+	in(ch, nb: random_num);
+	if cb = f4(pk_B, pk_A, nb, ra) then
+	insert p2c(addr_B, na, nb, ra, rb, dhkey_AB)
+).
+
+(* step 2 auth 1 passkey entry peripheral *)
+let step2ppeout() =
+(
+	get p1p(=addr_A, pk_A, pk_B, dhkey_BA) in
+	new rb: random_num;
+	let ra = rb in
+	out(peripheral_user_data_out, rb);
+	in(peripheral_user_ui, confirm: confirmation);
+	if confirm = yes_confirm then
+	new nb: random_num;
+	let cb = f4(pk_B, pk_A, nb, rb) in
+	in(ch, ca: bitstring);
+	out(ch, cb);
+	in(ch, na: random_num);
+	if ca = f4(pk_A, pk_B, na, rb) then
+	out(ch, nb);
+	insert p2p(addr_A, na, nb, ra, rb, dhkey_BA)
+).
+
+(* step 2 auth 1 oob, central outputs *)
+let step2coobout() =
+(
+	(* central has oob output peripheral does not *)
+	get p1c(=addr_B, pk_A, pk_B, dhkey_AB) in
+	new ra: random_num;
+	let rb = zero in
+	let ca = f4(pk_A, pk_A, ra, zero) in
+	out(oob_out_ch, (addr_A, ra, ca));
+	new na: random_num;
+	out(ch, na);
+	in(ch, nb: random_num);
+	insert p2c(addr_B, na, nb, ra, rb, dhkey_AB)
+).
+
+(* step 2 auth 1 oob, peripheral inputs *)
+let step2poobin() =
+(
+	get p1p(=addr_A, pk_A, pk_B, dhkey_BA) in
+	in(oob_out_ch, (addr_A: bt_addr, ra: random_num, ca: bitstring));
+	if ca = f4(pk_A, pk_A, ra, zero) then
+	let rb = zero in
+	new nb: random_num;
+	in(ch, na: random_num);
+	out(ch, nb);
+	insert p2p(addr_A, na, nb, ra, rb, dhkey_BA)
+).
+
+(* step 2 auth 1 oob, central inputs *)
+let step2coobin() =
+(
+	(* central does not have oob output but peripheral has *)
+	get p1c(=addr_B, pk_A, pk_B, dhkey_AB) in
+	in(oob_in_ch, (addr_B: bt_addr, rb: random_num, cb: bitstring));
+	if cb = f4(pk_B, pk_B, rb, zero) then
+	let ra = zero in
+	new na: random_num;
+	out(ch, na);
+	in(ch, nb: random_num);
+	insert p2c(addr_B, na, nb, ra, rb, dhkey_AB)
+).
+
+(* step 2 auth 1 oob, peripheral outputs *)
+let step2poobout() =
+(
+	get p1p(=addr_A, pk_A, pk_B, dhkey_BA) in
+	new rb: random_num;
+	let ra = zero in
+	let cb = f4(pk_B, pk_B, rb, zero) in
+	out(oob_in_ch, (addr_B, rb, cb));
+	new nb: random_num;
+	in(ch, na: random_num);
+	out(ch, nb);
+	insert p2p(addr_A, na, nb, ra, rb, dhkey_BA)
+).
+
+(* step 2 auth 1 oob, central inputs and outputs *)
+let step2coobinout() =
+(
+	get p1c(=addr_B, pk_A, pk_B, dhkey_AB) in
+	new ra: random_num;
+	let ca = f4(pk_A, pk_A, ra, zero) in
+	out(oob_out_ch, (addr_A, ra, ca));
+	in(oob_in_ch, (addr_B: bt_addr, rb: random_num, cb: bitstring));
+	if cb = f4(pk_B, pk_B, rb, zero) then
+	new na: random_num;
+	out(ch, na);
+	in(ch, nb: random_num);
+	insert p2c(addr_B, na, nb, ra, rb, dhkey_AB)
+).
+
+(* step 2 auth 1 oob, peripheral inputs and outputs *)
+let step2poobinout() =
+(
+	get p1p(=addr_A, pk_A, pk_B, dhkey_BA) in
+	new rb: random_num;
+	let cb = f4(pk_B, pk_B, rb, zero) in
+	in(oob_out_ch, (addr_A: bt_addr, ra: random_num, ca: bitstring));
+	out(oob_in_ch, (addr_B, rb, cb));
+	if ca = f4(pk_A, pk_A, ra, zero) then
+	new nb: random_num;
+	in(ch, na: random_num);
+	out(ch, nb);
+	insert p2p(addr_A, na, nb, ra, rb, dhkey_BA)
+).
+
+(* step 3 auth2 central *)
+let step3c() =
+(
+	get p2c(=addr_B, na, nb, ra, rb, dhkey_AB) in
+	let (mkey: mackey, ltk: key) = f5(dhkey_AB, na, nb, addr_A, addr_B) in
+	let ea = f6(mkey, na, nb, rb, iocap_A, addr_A, addr_B) in
+	event send_central(dhkey_AB);
+	out(ch, ea);
+	in(ch, eb: bitstring);
+	if eb = f6(mkey, nb, na, ra, iocap_B, addr_B, addr_A) then
+	event recv_central(dhkey_AB);
+	let lk_key = h6(h7(SALT, ltk), lebr) in
+	insert le_key_c(addr_B, ltk);
+	insert bc_key_c(addr_B, lk_key)
+).
+
+(* step 3 auth2 peripheral *)
+let step3p() =
+(
+	get p2p(=addr_A, na, nb, ra, rb, dhkey_BA) in
+	let (mkey: mackey, ltk: key) = f5(dhkey_BA, na, nb, addr_A, addr_B) in
+	let eb = f6(mkey, nb, na, ra, iocap_B, addr_B, addr_A) in
+	in(ch, ea: bitstring);
+	if ea = f6(mkey, na, nb, rb, iocap_A, addr_A, addr_B) then
+	event recv_peripheral(dhkey_BA);
+	event send_peripheral(dhkey_BA);
+	out(ch, eb);
+	let lk_key = h6(h7(SALT, ltk), lebr) in
+	insert le_key_p(addr_A, ltk);
+	insert bc_key_p(addr_A, lk_key)
+).
+
+
+(* user modeling numeric comparison *)
+let user_nc() =
+(
+	(* compare 6-digit numbers on central and peripheral *)
+  (
+	  in(central_user_data_out, va: random_num);
+	  in(peripheral_user_data_out, vb: random_num);
+	  if va = vb then
+	  (
+      (
+		  	out(central_user_ui, yes_confirm);
+		  	out(peripheral_user_ui, yes_confirm)
+      ) |
+      (
+		  	out(peripheral_user_ui, yes_confirm);
+		  	out(central_user_ui, yes_confirm)
+      )
+	  )
+	  else
+	  (
+      (
+		  	out(central_user_ui, no_confirm);
+		  	out(peripheral_user_ui, no_confirm)
+      ) |
+      (
+		  	out(peripheral_user_ui, no_confirm);
+		  	out(central_user_ui, no_confirm)
+      )
+	  )
+ 	) |
+ 	(
+	  in(peripheral_user_data_out, vb: random_num);
+	  in(central_user_data_out, va: random_num);
+	  if va = vb then
+	  (
+      (
+		  	out(central_user_ui, yes_confirm);
+		  	out(peripheral_user_ui, yes_confirm)
+      ) |
+      (
+		  	out(peripheral_user_ui, yes_confirm);
+		  	out(central_user_ui, yes_confirm)
+      )
+	  )
+	  else
+	  (
+      (
+		  	out(central_user_ui, no_confirm);
+		  	out(peripheral_user_ui, no_confirm)
+      ) |
+      (
+		  	out(peripheral_user_ui, no_confirm);
+		  	out(central_user_ui, no_confirm)
+      )
+	  )
+ 	)
+).
+
+(* User action in passkey entry mode, central display and peripheral input *)
+let userpecoutpin() =
+(
+  in(central_user_data_out, num: random_num);
+  out(central_user_ui, yes_confirm);
+  out(peripheral_user_data_in, num)
+).
+
+(* User action in passkey entry mode, peripheral display and central input *)
+let userpecinpout() =
+(
+  in(peripheral_user_data_out, num: random_num);
+  out(peripheral_user_ui, yes_confirm);
+  out(central_user_data_in, num)
+).
+
+(* User action in passkey entry mode, both central and peripheral input *)
+let userpebothin() =
+(
+  new r: random_num;
+  out(central_user_data_in, r);
+  out(peripheral_user_data_in, r)
+).
+
+(* BT/BLE authenticity properties *)
+query dhk: dhkey; event(recv_central(dhk)) ==> event(send_peripheral(dhk)).
+query dhk: dhkey; event(recv_peripheral(dhk)) ==> event(send_central(dhk)).
+
+process
+new exp_C: exponent;
+new exp_P: exponent;
+let pri_C = exponent2private_key(exp_C) in
+let pri_P = exponent2private_key(exp_P) in
